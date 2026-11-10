@@ -145,7 +145,11 @@ export class Hub extends DurableObject<Env> {
     } else if (m.type === "prompt" || m.type === "abort") {
       const a = this.agent(String(m.id ?? ""));
       if (!a) return safeSend(ws, JSON.stringify({ type: "gone", id: m.id }));
-      safeSend(a, JSON.stringify(m.type === "prompt" ? { type: "prompt", text: String(m.text ?? "") } : { type: "abort" }));
+      if (m.type === "abort") return safeSend(a, JSON.stringify({ type: "abort" }));
+      const images = (Array.isArray(m.images) ? m.images : []).slice(0, 8)
+        .filter((i: any) => typeof i?.data === "string" && typeof i?.mimeType === "string")
+        .map((i: any) => ({ data: i.data, mimeType: i.mimeType }));
+      safeSend(a, JSON.stringify({ type: "prompt", text: String(m.text ?? ""), images }));
     }
   }
 

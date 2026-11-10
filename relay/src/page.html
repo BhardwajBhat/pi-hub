@@ -31,6 +31,13 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--code); p
 footer { border-top: 1px solid var(--line); padding: .5rem .8rem; }
 form { display: flex; gap: .4rem; }
 textarea { flex: 1; min-height: 2.6rem; max-height: 10rem; resize: vertical; padding: .4rem; }
+#attach { padding: 0 .6rem; }
+#thumbs { display: flex; gap: .4rem; flex-wrap: wrap; margin-bottom: .4rem; }
+#thumbs:empty { display: none; }
+#thumbs span { position: relative; }
+#thumbs img { height: 3.5rem; border-radius: 4px; border: 1px solid var(--line); display: block; }
+#thumbs button { position: absolute; top: -.4rem; right: -.4rem; border-radius: 50%; width: 1.4rem; height: 1.4rem;
+  padding: 0; line-height: 1; font-size: .8rem; }
 #status { font-size: .8rem; color: var(--dim); margin-top: .3rem; min-height: 1.2em; }
 #login { max-width: 24rem; margin: 20vh auto; padding: 1rem; }
 #login input { width: 100%; padding: .4rem; margin: .5rem 0; }
@@ -63,7 +70,10 @@ textarea { flex: 1; min-height: 2.6rem; max-height: 10rem; resize: vertical; pad
     </header>
     <section id="log"></section>
     <footer>
+      <div id="thumbs"></div>
       <form id="composer">
+        <button id="attach" type="button" title="Attach images" disabled>📎</button>
+        <input id="file" type="file" accept="image/*" multiple hidden>
         <textarea id="text" placeholder="Message" disabled></textarea>
         <button id="send" disabled>Send</button>
         <button id="stop" type="button" hidden>Stop</button>
@@ -162,7 +172,7 @@ function renderList() {
 
 function controls() {
   const live = !!sessions.find(x => x.id === open);
-  $('text').disabled = $('send').disabled = !live;
+  $('text').disabled = $('send').disabled = $('attach').disabled = !live;
   $('stop').hidden = !(live && busy);
   $('status').textContent = !open ? '' : !live ? 'Session not connected (pi closed or laptop offline).' :
     busy ? (activity || 'working…') : touch() ? '' : 'Enter sends · Shift+Enter new line';
@@ -224,12 +234,63 @@ $('login').onsubmit = ev => {
   try { localStorage.setItem('pi-rc-token', token); } catch (e) {}
   retry = 1000; connect();
 };
-$('composer').onsubmit = ev => {
+// ---- images: paste, pick or drop; shrunk in the browser before sending
+let pending = [];   // {data (base64), mimeType, url}
+const MAX_SIDE = 1568, BUDGET = 700_000; // base64 bytes per message, under the relay's limit
+
+async function shrink(file, quality) {
+  const bmp = await createImageBitmap(file);
+  const scale = Math.min(1, MAX_SIDE / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * scale); c.height = Math.round(bmp.height * scale);
+  const g = c.getContext('2d');
+  g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); // transparent PNGs get a white background
+  g.drawImage(bmp, 0, 0, c.width, c.height);
+  const url = c.toDataURL('image/jpeg', quality);
+  return {data: url.slice(url.indexOf(',') + 1), mimeType: 'image/jpeg', url, file};
+}
+async function addFiles(files) {
+  for (const f of files) {
+    if (!f.type.startsWith('image/') || pending.length >= 8) continue;
+    try { pending.push(await shrink(f, 0.85)); } catch (e) { $('status').textContent = 'Could not read that image.'; }
+  }
+  renderThumbs();
+}
+function renderThumbs() {
+  $('thumbs').replaceChildren(...pending.map((p, i) => {
+    const s = el('span'), img = el('img'), x = el('button', '×');
+    img.src = p.url; x.type = 'button'; x.title = 'Remove';
+    x.onclick = () => { pending.splice(i, 1); renderThumbs(); };
+    s.append(img, x); return s;
+  }));
+}
+async function fitBudget() {
+  // Re-encode smaller until everything fits in one message.
+  for (const q of [0.7, 0.55, 0.4]) {
+    if (pending.reduce((n, p) => n + p.data.length, 0) <= BUDGET) return true;
+    pending = await Promise.all(pending.map(p => shrink(p.file, q)));
+  }
+  return pending.reduce((n, p) => n + p.data.length, 0) <= BUDGET;
+}
+$('attach').onclick = () => $('file').click();
+$('file').onchange = () => { addFiles([...$('file').files]); $('file').value = ''; };
+$('text').addEventListener('paste', ev => {
+  const files = [...(ev.clipboardData?.files || [])].filter(f => f.type.startsWith('image/'));
+  if (files.length) { ev.preventDefault(); addFiles(files); }
+});
+$('log').addEventListener('dragover', ev => ev.preventDefault());
+$('log').addEventListener('drop', ev => { ev.preventDefault(); addFiles([...ev.dataTransfer.files]); });
+
+$('composer').onsubmit = async ev => {
   ev.preventDefault();
   const text = $('text').value.trim();
-  if (!text || !open) return;
-  send({type: 'prompt', id: open, text});
-  $('text').value = '';
+  if ((!text && !pending.length) || !open) return;
+  if (pending.length && !(await fitBudget())) {
+    $('status').textContent = 'Images are too large together; send fewer at once.';
+    return;
+  }
+  send({type: 'prompt', id: open, text, images: pending.map(p => ({data: p.data, mimeType: p.mimeType}))});
+  $('text').value = ''; pending = []; renderThumbs();
 };
 $('text').onkeydown = ev => {
   // On phones Enter stays a newline; the Send button sends.

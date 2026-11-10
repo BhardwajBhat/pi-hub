@@ -108,10 +108,16 @@ export default function (pi: ExtensionAPI) {
       }
       if (m.type === "snapshot_request") {
         send({ type: "snapshot", to: m.to, data: { messages: history(), partial, busy } });
-      } else if (m.type === "prompt" && typeof m.text === "string" && m.text.trim()) {
+      } else if (m.type === "prompt") {
+        const text = typeof m.text === "string" ? m.text.trim() : "";
+        const images = (Array.isArray(m.images) ? m.images : [])
+          .filter((i: any) => typeof i?.data === "string" && /^image\/(png|jpeg|gif|webp)$/.test(i?.mimeType))
+          .map((i: any) => ({ type: "image" as const, data: i.data, mimeType: i.mimeType }));
+        if (!text && !images.length) return;
+        const content = images.length ? [{ type: "text" as const, text }, ...images] : text;
         // While pi is working, queue it like a follow-up typed in the terminal.
-        if (ctx && !ctx.isIdle()) pi.sendUserMessage(m.text, { deliverAs: "followUp" });
-        else pi.sendUserMessage(m.text);
+        if (ctx && !ctx.isIdle()) pi.sendUserMessage(content, { deliverAs: "followUp" });
+        else pi.sendUserMessage(content);
       } else if (m.type === "abort") {
         ctx?.abort();
       }
