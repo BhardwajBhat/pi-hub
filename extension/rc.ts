@@ -168,8 +168,9 @@ export default function (pi: ExtensionAPI) {
           .map((i: any) => ({ type: "image" as const, data: i.data, mimeType: i.mimeType }));
         if (!text && !images.length) return;
         const content = images.length ? [{ type: "text" as const, text }, ...images] : text;
-        // While pi is working, queue it like a follow-up typed in the terminal.
-        if (ctx && !ctx.isIdle()) pi.sendUserMessage(content, { deliverAs: "followUp" });
+        // While pi is working, steer: delivered once the current tool calls finish,
+        // so pi sees it mid-task instead of after it is done.
+        if (ctx && !ctx.isIdle()) pi.sendUserMessage(content, { deliverAs: "steer" });
         else pi.sendUserMessage(content);
       } else if (m.type === "abort") {
         ctx?.abort();

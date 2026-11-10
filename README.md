@@ -41,8 +41,8 @@ It saves to `~/.pi/agent/pi-rc.json` and prints the web link
 
 ## Use
 - Start `pi` anywhere; the session shows up on the web page (footer: `rc ●`).
-- Messages from the web go into the same session. If pi is busy they queue as a
-  follow-up. **Stop** on the web is the same as Escape in the terminal.
+- Messages from the web go into the same session. If pi is busy they steer it:
+  pi gets them as soon as its current tool calls finish. **Stop** on the web is the same as Escape in the terminal.
 - `/rc` shows status and the link · `/rc off` / `/rc on` for the current session.
 - A session is listed while its pi is running and online.
 
