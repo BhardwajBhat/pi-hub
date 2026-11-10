@@ -1,0 +1,15 @@
+# ~/.config/systemd/user/pi-hub.service
+[Unit]
+Description=pi hub web UI over herdr-core
+After=network-online.target
+
+[Service]
+# Put your box's Tailscale IP here (tailscale ip -4), or keep 127.0.0.1 and use `tailscale serve`.
+Environment=PIHUB_BIND=127.0.0.1
+Environment=PIHUB_PORT=8377
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 %h/pi-hub/pi-hub.py
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
