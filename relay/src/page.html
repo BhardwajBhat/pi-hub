@@ -23,6 +23,10 @@ header small { color: var(--dim); min-width: 0; overflow: hidden; text-overflow:
 #back { display: none; }
 #log { flex: 1; overflow: auto; padding: .4rem .8rem 1rem; }
 .msg { margin: .9rem 0; max-width: 80ch; }
+.msg.user { background: #168aa322; padding: .6rem .75rem; }
+@media (prefers-color-scheme: dark) {
+  .msg.user { background: #173e49; }
+}
 .who { font-size: .8rem; font-weight: 600; color: var(--dim); }
 .text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .md { overflow-wrap: anywhere; }
@@ -169,6 +173,7 @@ function renderMessage(m) {
   if (m.role === 'custom' && m.display === false) return null;
   const box = el('div', null, 'msg');
   if (m.role === 'user') {
+    box.classList.add('user');
     box.append(el('div', 'you', 'who'), linked(textOf(m.content), 'text'));
   } else if (m.role === 'assistant') {
     box.append(el('div', 'pi', 'who'));
