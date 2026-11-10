@@ -3,8 +3,15 @@
   "version": "0.1.0",
   "description": "Remote control for pi: follow and continue your pi sessions from a phone or any browser.",
   "private": true,
-  "keywords": ["pi-package"],
+  "keywords": [
+    "pi-package"
+  ],
   "pi": {
-    "extensions": ["./extension/rc.ts"]
+    "extensions": [
+      "./extension/rc.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
   }
 }

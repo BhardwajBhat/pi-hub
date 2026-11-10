@@ -271,8 +271,7 @@ export default function (pi: ExtensionAPI) {
       "the same link. Pages are public to anyone with the link and run sandboxed (no localStorage or cookies).",
     promptSnippet: "Publish an HTML file or folder as a shareable web page (like an artifact)",
     promptGuidelines: [
-      "When the user asks for a page, report, chart, diagram or small web app to look at, write it as self-contained HTML (or a folder with index.html) and call publish_page, then give the user the link.",
-      "Use relative paths for assets inside a published folder. Pages cannot use localStorage, cookies or the user's local servers.",
+      "Before making a page to publish, load the publish-page skill for how to build and publish it.",
     ],
     parameters: Type.Object({
       path: Type.String({ description: "An .html file, or a folder containing index.html (relative to the working directory)" }),

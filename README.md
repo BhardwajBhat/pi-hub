@@ -11,6 +11,8 @@ desktop: pi + rc extension ─┼──► relay (free Cloudflare Worker) ◄─
 - **extension/** — a pi extension. Each pi session connects out to the relay,
   streams what happens, and accepts messages typed on the web as if you typed
   them in the terminal. Works on any network that allows HTTPS (college wifi too).
+- **skills/publish-page/** — tells pi how to build pages (phone-first, pi rc's plain
+  look, what works in the sandbox) and publish them; includes an HTML template.
 - **relay/** — a Cloudflare Worker + Durable Object that passes messages between
   pi sessions and browsers, and serves the web page. It stores nothing.
 
@@ -46,7 +48,8 @@ It saves to `~/.pi/agent/pi-rc.json` and prints the web link
 
 ## Pages (like artifacts)
 Ask pi for something to look at ("make a page comparing the runs", "publish the
-report") and it writes HTML and calls its `publish_page` tool. You get a link like
+report") and it loads the bundled `publish-page` skill, writes HTML in the same
+plain style as pi rc, and calls its `publish_page` tool. You get a link like
 `https://pi-rc.<you>.workers.dev/a/<random-id>/`, shown in the chat.
 
 - A single `.html` file, or a folder with `index.html` plus its CSS/JS/images/data

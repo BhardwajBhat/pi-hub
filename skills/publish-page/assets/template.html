@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Title</title>
+<style>
+  /* Same look as the pi rc web page: plain, system font, thin lines, auto light/dark. */
+  :root { color-scheme: light dark; --line: #8886; --dim: #888; --code: #8881; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.45 system-ui, sans-serif; }
+  main { max-width: 48rem; margin: 0 auto; padding: .8rem .8rem 2.5rem; }
+  header { border-bottom: 1px solid var(--line); padding-bottom: .5rem; margin-bottom: .8rem; }
+  h1 { font-size: 1rem; margin: 0; }
+  header small, .dim { color: var(--dim); }
+  h2 { font-size: .8rem; font-weight: 600; color: var(--dim); text-transform: lowercase; margin: 1.4rem 0 .3rem; }
+  p { margin: .4rem 0; }
+  a { color: inherit; }
+  .stats { display: flex; flex-wrap: wrap; gap: .4rem 1.6rem; margin: .6rem 0; }
+  .stats b { display: block; font-size: 1.3rem; font-variant-numeric: tabular-nums; }
+  .stats span { color: var(--dim); font-size: .8rem; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+  th, td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--dim); font-weight: 600; font-size: .8rem; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  code, pre { font-size: .85em; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--code); padding: .5rem; overflow: auto; }
+  details { margin: .3rem 0; font-size: .9rem; }
+  summary { cursor: pointer; color: var(--dim); }
+  svg { max-width: 100%; height: auto; }
+  svg text { fill: var(--dim); font-size: 11px; font-family: system-ui, sans-serif; }
+  svg .axis { stroke: var(--line); }
+  svg .series { stroke: currentColor; fill: none; stroke-width: 1.5; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Title</h1>
+    <small>one line: what this shows and the main takeaway</small>
+  </header>
+
+  <div class="stats">
+    <div><b>42</b><span>metric</span></div>
+    <div><b>1.8×</b><span>metric</span></div>
+  </div>
+
+  <h2>details</h2>
+  <div class="scroll">
+    <table>
+      <thead><tr><th>name</th><th class="num">value</th></tr></thead>
+      <tbody><tr><td>row</td><td class="num">1</td></tr></tbody>
+    </table>
+  </div>
+
+  <h2>notes</h2>
+  <p>Plain text. Longer material can go in <code>&lt;details&gt;</code> blocks.</p>
+</main>
+<!-- Small data: <script type="application/json" id="data">{...}</script>, read with
+     JSON.parse(document.getElementById('data').textContent) -->
+</body>
+</html>
