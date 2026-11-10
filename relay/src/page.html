@@ -25,6 +25,20 @@ header small { color: var(--dim); min-width: 0; overflow: hidden; text-overflow:
 .msg { margin: .9rem 0; max-width: 80ch; }
 .who { font-size: .8rem; font-weight: 600; color: var(--dim); }
 .text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.md { overflow-wrap: anywhere; }
+.md > :first-child { margin-top: 0; } .md > :last-child { margin-bottom: 0; }
+.md p, .md ul, .md ol, .md pre, .md blockquote, .md table { margin: .45rem 0; }
+.md ul, .md ol { padding-left: 1.3rem; }
+.md h1, .md h2, .md h3, .md h4 { font-size: 1rem; margin: .8rem 0 .3rem; }
+.md h1, .md h2 { font-size: 1.05rem; }
+.md code { font-size: .85em; background: var(--code); padding: .05rem .25rem; border-radius: 3px; }
+.md pre code { background: none; padding: 0; }
+.md blockquote { border-left: 3px solid var(--line); padding-left: .6rem; color: var(--dim); margin-left: 0; }
+.md table { border-collapse: collapse; display: block; overflow-x: auto; font-size: .9rem; }
+.md th, .md td { border-bottom: 1px solid var(--line); padding: .25rem .5rem; text-align: left; }
+.md th { color: var(--dim); }
+.md [align=right] { text-align: right; font-variant-numeric: tabular-nums; } .md [align=center] { text-align: center; }
+.md hr { border: 0; border-top: 1px solid var(--line); }
 details { margin: .3rem 0; font-size: .9rem; }
 summary { cursor: pointer; color: var(--dim); }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--code); padding: .5rem; margin: .3rem 0; max-height: 20rem; overflow: auto; font-size: .8rem; }
@@ -82,6 +96,13 @@ textarea { flex: 1; min-height: 2.6rem; max-height: 10rem; resize: vertical; pad
     </footer>
   </main>
 </div>
+<!-- Markdown for pi's replies. Pinned with integrity hashes; without them the page shows plain text. -->
+<script async src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"
+  integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi" crossorigin="anonymous"
+  onload="mdReady()"></script>
+<script async src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"
+  integrity="sha384-+VfUPEb0PdtChMwmBcBmykRMDd+v6D/oFmB3rZM/puCMDYcIvF968OimRh4KQY9a" crossorigin="anonymous"
+  onload="mdReady()"></script>
 <script>
 'use strict';
 const $ = id => document.getElementById(id);
@@ -121,6 +142,29 @@ function textOf(content) {
   return (content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
 }
 
+// ---- markdown (pi's replies only)
+let mdOn = false;
+function mdReady() {
+  if (mdOn || !window.marked || !window.DOMPurify) return;
+  DOMPurify.addHook('afterSanitizeAttributes', node => {
+    if (node.tagName === 'A') { node.setAttribute('target', '_blank'); node.setAttribute('rel', 'noopener noreferrer'); }
+  });
+  mdOn = true;
+  if (typeof renderLog === 'function') renderLog();
+}
+function md(text) {
+  if (!mdOn) return linked(text, 'text');
+  const box = el('div', null, 'md');
+  // The page holds the relay token, so model output is always sanitized. Images are
+  // dropped: a tricked model could otherwise leak data through an image URL.
+  box.innerHTML = DOMPurify.sanitize(marked.parse(text, {gfm: true, breaks: true}), {
+    FORBID_TAGS: ['img', 'style', 'form', 'input', 'button', 'textarea', 'select', 'iframe', 'object', 'embed', 'video', 'audio', 'source', 'picture', 'svg', 'math'],
+    FORBID_ATTR: ['style', 'srcset'],
+    ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|#)/i,
+  });
+  return box;
+}
+
 function renderMessage(m) {
   if (m.role === 'custom' && m.display === false) return null;
   const box = el('div', null, 'msg');
@@ -129,7 +173,7 @@ function renderMessage(m) {
   } else if (m.role === 'assistant') {
     box.append(el('div', 'pi', 'who'));
     for (const b of (typeof m.content === 'string' ? [{type: 'text', text: m.content}] : m.content || [])) {
-      if (b.type === 'text' && b.text) box.append(linked(b.text, 'text'));
+      if (b.type === 'text' && b.text) box.append(md(b.text));
       else if (b.type === 'thinking' && b.thinking) box.append(fold('thinking', b.thinking));
       else if (b.type === 'toolCall') box.append(fold(b.name + ' ' + brief(b.arguments), JSON.stringify(b.arguments, null, 2)));
     }
