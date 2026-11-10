@@ -1,6 +1,6 @@
 ---
 name: publish-page
-description: Make a web page (report, chart, dashboard, diagram, comparison, small interactive tool) and publish it with the publish_page tool so the user gets a link to open on their phone or share. Use when the user asks for something to look at, a page, an artifact, a visual summary, or to publish/share HTML.
+description: Make, publish, update, list or delete web pages (reports, charts, dashboards, diagrams, comparisons, small interactive tools) on the user's pi rc relay, so they get a link to open on their phone or share. Use when the user asks for something to look at, a page, an artifact, a visual summary, to publish/share HTML, or about pages already published.
 ---
 
 # Publishing pages
@@ -8,6 +8,43 @@ description: Make a web page (report, chart, dashboard, diagram, comparison, sma
 The user follows pi from a phone or browser through pi rc. `publish_page` uploads an
 `.html` file or a folder with `index.html` to their relay and returns a link. Pages
 are public to anyone with the link and run sandboxed.
+
+## Tools
+
+Everything goes through these three tools. Never read `~/.pi/agent/pi-rc.json` (it
+holds the user's secret token), never call the relay with curl/fetch yourself, and
+don't read the extension's source to work out how pages work: it's all here.
+
+| The user wants… | Do |
+|---|---|
+| a new page | build it (below), then `publish_page` |
+| changes to a page made in this session | edit the same files, `publish_page` with the same `path` (same link) |
+| changes to a page from another session or machine | you don't have its files: `list_pages` for the link, ask if they want it rebuilt here (that gives a new link) |
+| to know what's published | `list_pages`, then answer with each title and its link |
+| a page removed | `list_pages` to find the id, then `delete_page` with that id |
+
+- **`publish_page`** `{ path, title?, new_link? }`
+  - `path`: an `.html` file, or a folder whose top level has `index.html`. Relative
+    to the working directory, or absolute.
+  - `title`: short, shown in `list_pages`. Defaults to the file/folder name.
+  - `new_link: true`: publish as a separate page instead of updating this path's link.
+  - Returns `Published: <url>` or `Updated: <url>`. The same path in the same session
+    maps to the same link, even after edits.
+  - Fails with a clear message if the folder has no `index.html`, is over 20 MB / 300
+    files, or pi rc isn't set up (then tell the user to run `/rc setup`).
+- **`list_pages`** `{}`: every published page from all machines and sessions, newest
+  first, with title, size, last update, id and link.
+- **`delete_page`** `{ id }`: removes the page; its link stops working. Only when the
+  user asks, and confirm which one if the request is ambiguous.
+
+Example:
+
+```
+publish_page { "path": "~/.local/share/pi-rc/pages/compiler-bench/index.html", "title": "TCC vs GCC" }
+→ Published: https://pi-rc.example.workers.dev/a/484w6t17531p0m2y1u721a5n/
+```
+
+The user can do the same by hand with `/rc pages` and `/rc unpublish <id>`.
 
 ## Workflow
 
@@ -20,9 +57,9 @@ are public to anyone with the link and run sandboxed.
 3. **Check before publishing.** The link is public. Do not include secrets, API keys,
    tokens, `.env` contents or personal data. If the page must contain something
    private, ask the user first.
-4. **Publish** with `publish_page` (`path`, short `title`). Use `new_link: true` only
-   when the user wants a separate copy, e.g. to keep the old version.
+4. **Publish** with `publish_page` (`path`, short `title`).
 5. **Reply** with the link and one line on what the page shows. Don't repeat its content.
+   Whenever you mention a published page, include its link.
 
 ## Building a good page
 

@@ -279,9 +279,8 @@ export default function (pi: ExtensionAPI) {
       new_link: Type.Optional(Type.Boolean({ description: "Publish under a new link instead of updating this path's earlier one" })),
     }),
     async execute(_id, params, _signal, _onUpdate, c) {
-      const config = loadConfig();
-      if (!config) throw new Error("pi rc is not set up on this machine. The user needs to run: /rc setup <relay url> <token>");
-      const full = resolve(c.cwd, params.path);
+      const config = needConfig();
+      const full = resolve(c.cwd, params.path.replace(/^~(?=\/|$)/, homedir()));
       const files = collect(full);
       const id = params.new_link ? undefined : knownId(full);
       const r = await relayFetch(config, "/pages", {
@@ -293,6 +292,43 @@ export default function (pi: ExtensionAPI) {
         content: [{ type: "text", text: `${r.updated ? "Updated" : "Published"}: ${r.url}` }],
         details: { url: r.url, id: r.id, files: files.length },
       };
+    },
+  });
+
+  const needConfig = () => {
+    const config = loadConfig();
+    if (!config) throw new Error("pi rc is not set up on this machine. The user needs to run: /rc setup <relay url> <token>");
+    return config;
+  };
+  const ago = (ms: number) => {
+    const m = Math.round((Date.now() - ms) / 60000);
+    return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
+  };
+
+  pi.registerTool({
+    name: "list_pages",
+    label: "List pages",
+    description: "List the pages published to the user's pi rc relay (from every machine and session): id, title, size, last update and link.",
+    promptSnippet: "List published pages and their links",
+    parameters: Type.Object({}),
+    async execute() {
+      const list: any[] = await relayFetch(needConfig(), "/pages");
+      const text = list.length
+        ? list.map((p) => `- ${p.title || "(untitled)"} · ${Math.ceil(p.bytes / 1024)} KB · updated ${ago(p.updated)}\n  id: ${p.id}\n  ${p.url}`).join("\n")
+        : "No pages are published.";
+      return { content: [{ type: "text", text }], details: { pages: list } };
+    },
+  });
+
+  pi.registerTool({
+    name: "delete_page",
+    label: "Delete page",
+    description: "Delete a published page by its id (from list_pages). Its link stops working. Only when the user asks.",
+    promptSnippet: "Delete a published page by id",
+    parameters: Type.Object({ id: Type.String({ description: "Page id from list_pages" }) }),
+    async execute(_id, params) {
+      const r = await relayFetch(needConfig(), "/pages/" + encodeURIComponent(params.id), { method: "DELETE" });
+      return { content: [{ type: "text", text: r.deleted ? `Deleted page ${params.id}.` : `No page with id ${params.id}.` }], details: r };
     },
   });
 
