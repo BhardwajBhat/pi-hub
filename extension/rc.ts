@@ -94,6 +94,8 @@ export default function (pi: ExtensionAPI) {
         cwd: tilde(ctx!.cwd),
         name: pi.getSessionName() ?? basename(ctx!.cwd),
         busy,
+        // What this version of the extension can do, so the page can adapt.
+        caps: ["images"],
       });
       clearInterval(pingTimer);
       pingTimer = setInterval(() => sock.readyState === WebSocket.OPEN && sock.send("ping"), 30_000);

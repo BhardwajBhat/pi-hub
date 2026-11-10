@@ -16,7 +16,7 @@ interface Env {
   TOKEN: string;
 }
 
-type AgentInfo = { kind: "agent"; id: string; machine: string; cwd: string; name: string; busy: boolean };
+type AgentInfo = { kind: "agent"; id: string; machine: string; cwd: string; name: string; busy: boolean; caps: string[] };
 type ViewerInfo = { kind: "viewer"; vid: string; open: string };
 
 export default {
@@ -72,7 +72,7 @@ export class Hub extends DurableObject<Env> {
     for (const ws of this.ctx.getWebSockets("agent")) {
       if (ws === gone) continue;
       const a = ws.deserializeAttachment() as AgentInfo | null;
-      if (a) out.push({ id: a.id, machine: a.machine, cwd: a.cwd, name: a.name, busy: a.busy });
+      if (a) out.push({ id: a.id, machine: a.machine, cwd: a.cwd, name: a.name, busy: a.busy, caps: a.caps ?? [] });
     }
     return out;
   }
@@ -107,6 +107,7 @@ export class Hub extends DurableObject<Env> {
         const info: AgentInfo = {
           kind: "agent", id: String(m.id), machine: String(m.machine ?? "?"),
           cwd: String(m.cwd ?? ""), name: String(m.name ?? ""), busy: !!m.busy,
+          caps: Array.isArray(m.caps) ? m.caps.map(String).slice(0, 20) : [],
         };
         // A reconnect replaces the old socket for the same session.
         this.agent(info.id)?.close(4000, "replaced");

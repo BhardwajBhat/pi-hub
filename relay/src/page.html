@@ -285,6 +285,12 @@ $('composer').onsubmit = async ev => {
   ev.preventDefault();
   const text = $('text').value.trim();
   if ((!text && !pending.length) || !open) return;
+  const session = sessions.find(s => s.id === open);
+  if (pending.length && !(session?.caps || []).includes('images')) {
+    $('status').textContent = 'pi on ' + session?.machine + ' has an older rc extension that drops images. ' +
+      'There, run: pi update --extensions, then restart pi.';
+    return;
+  }
   if (pending.length && !(await fitBudget())) {
     $('status').textContent = 'Images are too large together; send fewer at once.';
     return;
