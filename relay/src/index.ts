@@ -303,7 +303,14 @@ export class Hub extends DurableObject<Env> {
     }
   }
 
-  async webSocketClose(ws: WebSocket) {
+  async webSocketClose(ws: WebSocket, code?: number) {
+    // Answer the client's close; without this the client waits ~10 s for a reply
+    // (so quitting pi would hang). 1005/1006 are not sendable codes.
+    try {
+      ws.close(code && code !== 1005 && code !== 1006 ? code : 1000, "bye");
+    } catch {
+      // already closed
+    }
     const me = ws.deserializeAttachment() as AgentInfo | ViewerInfo | null;
     if (me?.kind === "agent") {
       // Only announce if this was the session's live socket (not one replaced by a reconnect).
