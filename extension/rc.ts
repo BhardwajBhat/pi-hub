@@ -6,9 +6,10 @@
 // Then every pi session connects on its own. /rc shows status and the web link,
 // /rc off and /rc on toggle it for the current session.
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { Type } from "typebox";
 import { homedir, hostname } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, extname, join, relative, resolve } from "node:path";
 
 type Config = { url: string; token: string };
 
@@ -45,6 +46,56 @@ function slim<T>(message: T): T {
       b?.type === "image" ? { type: "text", text: "[image]" } : b,
     ),
   };
+}
+
+// ---- publishing pages -----------------------------------------------------
+
+const MIME: Record<string, string> = {
+  ".html": "text/html; charset=utf-8", ".htm": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8", ".json": "application/json",
+  ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+  ".webp": "image/webp", ".ico": "image/x-icon", ".txt": "text/plain; charset=utf-8", ".md": "text/plain; charset=utf-8",
+  ".csv": "text/csv; charset=utf-8", ".wasm": "application/wasm", ".woff": "font/woff", ".woff2": "font/woff2",
+  ".mp4": "video/mp4", ".webm": "video/webm", ".mp3": "audio/mpeg", ".pdf": "application/pdf",
+};
+const SKIP_DIRS = new Set(["node_modules", ".git", "__pycache__", ".venv", "venv"]);
+const MAX_FILES = 300, MAX_BYTES = 20 * 1024 * 1024;
+
+function collect(root: string): { path: string; type: string; data: string }[] {
+  const st = statSync(root);
+  if (st.isFile()) {
+    if (!/\.html?$/i.test(root)) throw new Error("A single file must be .html. For other files, publish the folder that has an index.html.");
+    return [{ path: "index.html", type: MIME[".html"], data: readFileSync(root).toString("base64") }];
+  }
+  const out: { path: string; type: string; data: string }[] = [];
+  let bytes = 0;
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      if (name.startsWith(".") || SKIP_DIRS.has(name)) continue;
+      const full = join(dir, name), s = statSync(full);
+      if (s.isDirectory()) walk(full);
+      else if (s.isFile()) {
+        bytes += s.size;
+        if (out.length >= MAX_FILES) throw new Error(`Too many files (max ${MAX_FILES}). Publish a smaller folder, e.g. the build output.`);
+        if (bytes > MAX_BYTES) throw new Error("Folder is over 20 MB. Publish a smaller folder, e.g. the build output.");
+        const type = MIME[extname(name).toLowerCase()] ?? "application/octet-stream";
+        out.push({ path: relative(root, full).split("\\").join("/"), type, data: readFileSync(full).toString("base64") });
+      }
+    }
+  };
+  walk(root);
+  if (!out.some((f) => f.path === "index.html")) throw new Error("The folder needs an index.html at its top level.");
+  return out;
+}
+
+async function relayFetch(c: Config, path: string, init: RequestInit = {}) {
+  const res = await fetch(base(c.url) + path, {
+    ...init,
+    headers: { ...(init.headers ?? {}), authorization: "Bearer " + c.token, "content-type": "application/json" },
+  });
+  const body: any = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error ?? `relay answered ${res.status}`);
+  return body;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -200,8 +251,54 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_execution_start", async (e: any) => event({ type: "activity", text: "running " + e.toolName + "…" }));
   pi.on("tool_execution_end", async () => event({ type: "activity", text: "" }));
 
+  // The page id published from each path, kept in the session so republishing
+  // the same file or folder updates the same link.
+  function knownId(path: string): string | undefined {
+    let id: string | undefined;
+    for (const e of ctx?.sessionManager.getEntries() ?? []) {
+      const d: any = (e as any).type === "custom" && (e as any).customType === "pi-rc-page" ? (e as any).data : null;
+      if (d?.path === path) id = d.id;
+    }
+    return id;
+  }
+
+  pi.registerTool({
+    name: "publish_page",
+    label: "Publish page",
+    description:
+      "Publish an HTML page (a single .html file, or a folder with index.html plus its CSS/JS/images) to the user's " +
+      "pi rc relay and get a link they can open on their phone or share. Publishing the same path again updates " +
+      "the same link. Pages are public to anyone with the link and run sandboxed (no localStorage or cookies).",
+    promptSnippet: "Publish an HTML file or folder as a shareable web page (like an artifact)",
+    promptGuidelines: [
+      "When the user asks for a page, report, chart, diagram or small web app to look at, write it as self-contained HTML (or a folder with index.html) and call publish_page, then give the user the link.",
+      "Use relative paths for assets inside a published folder. Pages cannot use localStorage, cookies or the user's local servers.",
+    ],
+    parameters: Type.Object({
+      path: Type.String({ description: "An .html file, or a folder containing index.html (relative to the working directory)" }),
+      title: Type.Optional(Type.String({ description: "Short title for the page list" })),
+      new_link: Type.Optional(Type.Boolean({ description: "Publish under a new link instead of updating this path's earlier one" })),
+    }),
+    async execute(_id, params, _signal, _onUpdate, c) {
+      const config = loadConfig();
+      if (!config) throw new Error("pi rc is not set up on this machine. The user needs to run: /rc setup <relay url> <token>");
+      const full = resolve(c.cwd, params.path);
+      const files = collect(full);
+      const id = params.new_link ? undefined : knownId(full);
+      const r = await relayFetch(config, "/pages", {
+        method: "POST",
+        body: JSON.stringify({ id, title: params.title ?? basename(full), files }),
+      });
+      if (!id) pi.appendEntry("pi-rc-page", { path: full, id: r.id });
+      return {
+        content: [{ type: "text", text: `${r.updated ? "Updated" : "Published"}: ${r.url}` }],
+        details: { url: r.url, id: r.id, files: files.length },
+      };
+    },
+  });
+
   pi.registerCommand("rc", {
-    description: "Remote control: /rc [setup <url> <token> | on | off]",
+    description: "Remote control: /rc [setup <url> <token> | on | off | pages | unpublish <id>]",
     handler: async (args, c) => {
       ctx = c;
       const [cmd, url, token] = (args ?? "").trim().split(/\s+/);
@@ -215,6 +312,22 @@ export default function (pi: ExtensionAPI) {
         disconnect();
         connect();
         c.ui.notify(`Saved to ${CONFIG_FILE}. Open on your phone:\n${webLink({ url, token })}`, "info");
+      } else if (cmd === "pages" || cmd === "unpublish") {
+        const config = loadConfig();
+        if (!config) return c.ui.notify("Not set up. Run: /rc setup <relay url> <token>", "warning");
+        try {
+          if (cmd === "unpublish") {
+            if (!url) return c.ui.notify("Usage: /rc unpublish <page id>", "error");
+            const r = await relayFetch(config, "/pages/" + encodeURIComponent(url), { method: "DELETE" });
+            return c.ui.notify(r.deleted ? `Deleted ${url}` : `No page ${url}`, "info");
+          }
+          const list: any[] = await relayFetch(config, "/pages");
+          c.ui.notify(list.length
+            ? list.map((p) => `${p.id}  ${p.title}  (${Math.ceil(p.bytes / 1024)} KB)\n  ${p.url}`).join("\n")
+            : "No published pages.", "info");
+        } catch (e) {
+          c.ui.notify("rc: " + (e as Error).message, "error");
+        }
       } else if (cmd === "off") {
         enabled = false;
         disconnect();

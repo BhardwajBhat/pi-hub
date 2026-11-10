@@ -44,6 +44,19 @@ It saves to `~/.pi/agent/pi-rc.json` and prints the web link
 - `/rc` shows status and the link · `/rc off` / `/rc on` for the current session.
 - A session is listed while its pi is running and online.
 
+## Pages (like artifacts)
+Ask pi for something to look at ("make a page comparing the runs", "publish the
+report") and it writes HTML and calls its `publish_page` tool. You get a link like
+`https://pi-rc.<you>.workers.dev/a/<random-id>/`, shown in the chat.
+
+- A single `.html` file, or a folder with `index.html` plus its CSS/JS/images/data
+  (max 300 files, 20 MB; `node_modules`, `.git` and dotfiles are skipped).
+- Publishing the same path again from the same session updates the same link.
+- Anyone with the link can view it, so it's easy to share. Pages run sandboxed: no
+  localStorage or cookies, and no access to your token or sessions.
+- `/rc pages` lists them, `/rc unpublish <id>` deletes one. They're stored in the
+  relay (Durable Object SQLite; the free plan allows 5 GB in total).
+
 ## Security
 Anyone with the token can send messages to your pi sessions, which can run
 commands on your machines. Keep the token private (it's in the web link).

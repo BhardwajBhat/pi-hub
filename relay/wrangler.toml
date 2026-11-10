@@ -6,10 +6,18 @@ compatibility_date = "2026-10-01"
 name = "HUB"
 class_name = "Hub"
 
+[[durable_objects.bindings]]
+name = "PAGES"
+class_name = "Pages"
+
 # SQLite-backed Durable Objects are the kind the free plan allows.
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Hub"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Pages"]
 
 [[rules]]
 type = "Text"

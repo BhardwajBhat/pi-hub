@@ -104,6 +104,18 @@ function el(tag, text, cls) {
 function fold(label, text) {
   const d = el('details'); d.append(el('summary', label), el('pre', text)); return d;
 }
+// Text with http(s) links made clickable (built as DOM nodes, never as HTML).
+function linked(text, cls) {
+  const box = el('div', null, cls);
+  let last = 0;
+  for (const m of text.matchAll(/https?:\/\/[^\s<>"'`)\]]+/g)) {
+    box.append(text.slice(last, m.index));
+    const a = el('a', m[0]); a.href = m[0]; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    box.append(a); last = m.index + m[0].length;
+  }
+  box.append(text.slice(last));
+  return box;
+}
 function textOf(content) {
   if (typeof content === 'string') return content;
   return (content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
@@ -113,15 +125,20 @@ function renderMessage(m) {
   if (m.role === 'custom' && m.display === false) return null;
   const box = el('div', null, 'msg');
   if (m.role === 'user') {
-    box.append(el('div', 'you', 'who'), el('div', textOf(m.content), 'text'));
+    box.append(el('div', 'you', 'who'), linked(textOf(m.content), 'text'));
   } else if (m.role === 'assistant') {
     box.append(el('div', 'pi', 'who'));
     for (const b of (typeof m.content === 'string' ? [{type: 'text', text: m.content}] : m.content || [])) {
-      if (b.type === 'text' && b.text) box.append(el('div', b.text, 'text'));
+      if (b.type === 'text' && b.text) box.append(linked(b.text, 'text'));
       else if (b.type === 'thinking' && b.thinking) box.append(fold('thinking', b.thinking));
       else if (b.type === 'toolCall') box.append(fold(b.name + ' ' + brief(b.arguments), JSON.stringify(b.arguments, null, 2)));
     }
     if (m.errorMessage) box.append(el('div', m.errorMessage, 'text'));
+  } else if (m.role === 'toolResult' && m.toolName === 'publish_page' && !m.isError) {
+    const url = (textOf(m.content).match(/https?:\/\/\S+/) || [])[0];
+    if (!url) return null;
+    const a = el('a', '↗ open page'); a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    box.append(a, el('small', ' ' + url.replace(/^https?:\/\//, ''), 'who'));
   } else if (m.role === 'toolResult') {
     box.append(fold((m.isError ? '✗ ' : '↳ ') + (m.toolName || 'result'), textOf(m.content)));
   } else if (m.role === 'bashExecution') {
