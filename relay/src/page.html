@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pi rc</title>
+<style>
+* { box-sizing: border-box; }
+:root { color-scheme: light dark; --line: #8886; --dim: #888; --code: #8881; }
+body { margin: 0; font: 16px/1.45 system-ui, sans-serif; }
+button, input, textarea { font: inherit; }
+.app { display: grid; grid-template-columns: 11rem minmax(0, 1fr); height: 100dvh; }
+aside { border-right: 1px solid var(--line); overflow: auto; padding: .6rem .5rem; font-size: .9rem; }
+aside b { display: block; margin: 0 .3rem .5rem; }
+aside a { display: block; padding: .35rem .3rem; color: inherit; text-decoration: none; border-radius: 4px; overflow-wrap: anywhere; }
+aside a[aria-current] { background: var(--code); font-weight: 600; }
+aside small { display: block; color: var(--dim); font-weight: normal; }
+.empty { color: var(--dim); padding: .3rem; }
+main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+header { padding: .5rem .8rem; border-bottom: 1px solid var(--line); display: flex; gap: .6rem; align-items: baseline; }
+header h1 { font-size: 1rem; margin: 0; flex: none; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+header small { color: var(--dim); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+#back { display: none; }
+#log { flex: 1; overflow: auto; padding: .4rem .8rem 1rem; }
+.msg { margin: .9rem 0; max-width: 80ch; }
+.who { font-size: .8rem; font-weight: 600; color: var(--dim); }
+.text { white-space: pre-wrap; overflow-wrap: anywhere; }
+details { margin: .3rem 0; font-size: .9rem; }
+summary { cursor: pointer; color: var(--dim); }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--code); padding: .5rem; margin: .3rem 0; max-height: 20rem; overflow: auto; font-size: .8rem; }
+footer { border-top: 1px solid var(--line); padding: .5rem .8rem; }
+form { display: flex; gap: .4rem; }
+textarea { flex: 1; min-height: 2.6rem; max-height: 10rem; resize: vertical; padding: .4rem; }
+#status { font-size: .8rem; color: var(--dim); margin-top: .3rem; min-height: 1.2em; }
+#login { max-width: 24rem; margin: 20vh auto; padding: 1rem; }
+#login input { width: 100%; padding: .4rem; margin: .5rem 0; }
+[hidden] { display: none !important; }
+@media (max-width: 640px) {
+  .app { grid-template-columns: 1fr; }
+  .app.chat aside, .app:not(.chat) main { display: none; }
+  aside { border-right: 0; font-size: 1rem; }
+  aside a { padding: .6rem .3rem; border-bottom: 1px solid var(--line); border-radius: 0; }
+  #back { display: inline; }
+}
+</style>
+</head>
+<body>
+<form id="login" hidden>
+  <b>pi rc</b>
+  <input id="token" type="password" placeholder="relay token" autocomplete="current-password">
+  <button>Connect</button>
+</form>
+<div class="app" id="app" hidden>
+  <aside>
+    <b>Sessions</b>
+    <nav id="list"></nav>
+  </aside>
+  <main>
+    <header>
+      <button id="back" type="button">‹</button>
+      <h1 id="title">Pick a session</h1>
+      <small id="where"></small>
+    </header>
+    <section id="log"></section>
+    <footer>
+      <form id="composer">
+        <textarea id="text" placeholder="Message" disabled></textarea>
+        <button id="send" disabled>Send</button>
+        <button id="stop" type="button" hidden>Stop</button>
+      </form>
+      <div id="status"></div>
+    </footer>
+  </main>
+</div>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+let token = '', ws = null, sessions = [], open = '', messages = [], partial = null, busy = false, activity = '';
+let retry = 1000;
+
+// The token can come from the link (#token=...), so one bookmark is enough.
+try {
+  const h = new URLSearchParams(location.hash.slice(1)).get('token');
+  if (h) { localStorage.setItem('pi-rc-token', h); history.replaceState(null, '', location.pathname); }
+  token = localStorage.getItem('pi-rc-token') || '';
+} catch (e) {}
+
+function el(tag, text, cls) {
+  const e = document.createElement(tag);
+  if (text != null) e.textContent = text;
+  if (cls) e.className = cls;
+  return e;
+}
+function fold(label, text) {
+  const d = el('details'); d.append(el('summary', label), el('pre', text)); return d;
+}
+function textOf(content) {
+  if (typeof content === 'string') return content;
+  return (content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
+}
+
+function renderMessage(m) {
+  if (m.role === 'custom' && m.display === false) return null;
+  const box = el('div', null, 'msg');
+  if (m.role === 'user') {
+    box.append(el('div', 'you', 'who'), el('div', textOf(m.content), 'text'));
+  } else if (m.role === 'assistant') {
+    box.append(el('div', 'pi', 'who'));
+    for (const b of (typeof m.content === 'string' ? [{type: 'text', text: m.content}] : m.content || [])) {
+      if (b.type === 'text' && b.text) box.append(el('div', b.text, 'text'));
+      else if (b.type === 'thinking' && b.thinking) box.append(fold('thinking', b.thinking));
+      else if (b.type === 'toolCall') box.append(fold(b.name + ' ' + brief(b.arguments), JSON.stringify(b.arguments, null, 2)));
+    }
+    if (m.errorMessage) box.append(el('div', m.errorMessage, 'text'));
+  } else if (m.role === 'toolResult') {
+    box.append(fold((m.isError ? '✗ ' : '↳ ') + (m.toolName || 'result'), textOf(m.content)));
+  } else if (m.role === 'bashExecution') {
+    box.append(fold('$ ' + (m.command || ''), m.output || ''));
+  } else {
+    const t = textOf(m.content) || m.summary;
+    if (!t) return null;
+    box.append(el('div', m.customType || m.role, 'who'), el('div', t, 'text'));
+  }
+  return box;
+}
+function brief(args) {
+  const v = args && (args.command || args.path || args.file_path || args.pattern);
+  return v ? String(v).slice(0, 60) : '';
+}
+
+function renderLog() {
+  const log = $('log');
+  const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 60;
+  const openKeys = new Set([...log.querySelectorAll('details[open]')].map(d => d.dataset.k));
+  const frag = document.createDocumentFragment();
+  [...messages, ...(partial ? [partial] : [])].forEach((m, i) => {
+    const e = renderMessage(m);
+    if (!e) return;
+    e.querySelectorAll('details').forEach((d, j) => { d.dataset.k = i + ':' + j; d.open = openKeys.has(d.dataset.k); });
+    frag.append(e);
+  });
+  log.replaceChildren(frag);
+  if (atBottom) log.scrollTop = log.scrollHeight;
+}
+
+function renderList() {
+  const list = $('list');
+  list.replaceChildren();
+  if (!sessions.length) list.append(el('div', 'No pi sessions connected.', 'empty'));
+  for (const s of sessions) {
+    const a = el('a', (s.busy ? '● ' : '') + (s.name || s.cwd.split('/').pop() || 'session'));
+    a.href = '#';
+    a.append(el('small', s.machine));
+    if (s.id === open) a.setAttribute('aria-current', 'true');
+    a.onclick = ev => { ev.preventDefault(); select(s.id); };
+    list.append(a);
+  }
+  const s = sessions.find(x => x.id === open);
+  if (s) { $('title').textContent = s.name || 'session'; $('where').textContent = '\u2066' + s.machine + ':' + s.cwd + '\u2069'; busy = s.busy; }
+  controls();
+}
+
+function controls() {
+  const live = !!sessions.find(x => x.id === open);
+  $('text').disabled = $('send').disabled = !live;
+  $('stop').hidden = !(live && busy);
+  $('status').textContent = !open ? '' : !live ? 'Session not connected (pi closed or laptop offline).' :
+    busy ? (activity || 'working…') : touch() ? '' : 'Enter sends · Shift+Enter new line';
+}
+
+function select(id) {
+  open = id; messages = []; partial = null; activity = '';
+  $('app').classList.add('chat');
+  renderLog(); renderList();
+  send({type: 'open', id});
+}
+
+function touch() { return matchMedia('(pointer: coarse)').matches; }
+function send(m) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(m)); }
+
+function onEvent(ev) {
+  if (ev.type === 'message_start' && ev.message.role === 'assistant') partial = ev.message;
+  else if (ev.type === 'message_update') partial = ev.message;
+  else if (ev.type === 'message_end') {
+    if (ev.message.role === 'assistant') partial = null;
+    messages.push(ev.message);
+  } else if (ev.type === 'busy') { busy = ev.busy; if (!busy) { activity = ''; partial = null; } }
+  else if (ev.type === 'activity') activity = ev.text || '';
+  renderLog(); controls();
+}
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host + '/viewer?token=' + encodeURIComponent(token));
+  let opened = false;
+  ws.onopen = () => {
+    opened = true; retry = 1000;
+    $('login').hidden = true; $('app').hidden = false;
+    if (open) send({type: 'open', id: open});
+  };
+  ws.onmessage = e => {
+    const m = JSON.parse(e.data);
+    if (m.type === 'sessions') { sessions = m.sessions; renderList(); }
+    else if (m.id !== open) return;
+    else if (m.type === 'snapshot') { messages = m.data.messages || []; partial = m.data.partial || null; busy = !!m.data.busy; renderLog(); controls(); }
+    else if (m.type === 'event') onEvent(m.event);
+    else if (m.type === 'gone') { sessions = sessions.filter(s => s.id !== m.id); renderList(); }
+  };
+  ws.onclose = () => {
+    if (!opened && retry === 1000) {
+      // Never connected: most likely a wrong token.
+      $('app').hidden = true; $('login').hidden = false;
+      $('token').value = ''; $('token').placeholder = 'relay token (the last one did not work)';
+      return;
+    }
+    $('status').textContent = 'Reconnecting…';
+    setTimeout(connect, retry); retry = Math.min(retry * 2, 15000);
+  };
+}
+
+$('login').onsubmit = ev => {
+  ev.preventDefault();
+  token = $('token').value.trim();
+  try { localStorage.setItem('pi-rc-token', token); } catch (e) {}
+  retry = 1000; connect();
+};
+$('composer').onsubmit = ev => {
+  ev.preventDefault();
+  const text = $('text').value.trim();
+  if (!text || !open) return;
+  send({type: 'prompt', id: open, text});
+  $('text').value = '';
+};
+$('text').onkeydown = ev => {
+  // On phones Enter stays a newline; the Send button sends.
+  if (ev.key === 'Enter' && !ev.shiftKey && !touch()) {
+    ev.preventDefault(); $('composer').requestSubmit();
+  }
+};
+$('stop').onclick = () => send({type: 'abort', id: open});
+$('back').onclick = () => { $('app').classList.remove('chat'); };
+setInterval(() => { if (ws && ws.readyState === 1) ws.send('ping'); }, 30000);
+
+if (token) connect(); else $('login').hidden = false;
+</script>
+</body>
+</html>

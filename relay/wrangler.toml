@@ -1,0 +1,17 @@
+name = "pi-rc"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+
+[[durable_objects.bindings]]
+name = "HUB"
+class_name = "Hub"
+
+# SQLite-backed Durable Objects are the kind the free plan allows.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Hub"]
+
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]
+fallthrough = true
