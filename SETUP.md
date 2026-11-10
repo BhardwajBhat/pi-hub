@@ -1,76 +1,78 @@
-# pi hub setup (all Linux)
+# pi hub
 
-The default page is a minimal HTML chat: a conversation sidebar, structured
-user/assistant messages, expandable thinking and tool results, and a composer.
-It uses Pi's JSONL RPC mode, not terminal screen scraping. Python's standard
-library is the only server dependency; the chat needs JavaScript in the browser.
+One plain-HTML chat page for Pi on all your machines. Run it on an always-on
+box; open it from a phone or any laptop. Each conversation runs
+`pi --mode rpc` on the machine you pick: the box itself, or a laptop over ssh.
+Messages, thinking and tool results show as structured chat, not a terminal.
 
-## Quick start
+Python 3.8+ standard library only on the box. On every machine, only Pi.
 
-Install and authenticate Pi first, then run from this repository:
+## Setup (all Linux)
 
+### Every machine, including the always-on box
 ```sh
-python3 pi-hub.py
-# open http://127.0.0.1:8377
-```
-
-Create a conversation, choose its local working directory, and send a message.
-Ctrl/Cmd+Enter sends; Enter inserts a newline. Stop cancels the active run.
-Chat sessions start on the first message and use your installed Pi configuration
-and credentials. `PIHUB_AGENT` must be a Pi executable/command supporting RPC
-(e.g. `PIHUB_AGENT='/absolute/path/to/pi --model provider/model'`).
-
-Conversations and Pi session files live under `~/.local/share/pi-hub` (override
-with `PIHUB_DATA_DIR`). They survive dashboard restarts and resume on the next
-message. Browser reloads do not stop active work. Stopping the dashboard does
-stop its chat processes; in-flight work does not outlive a server restart.
-Run only one dashboard process against a given data directory.
-
-The original `hc` dashboard is preserved at `/terminals`, including remote
-machines and keyboard controls. **New structured chats are local only**; existing
-`hc` terminal sessions are not automatically imported or converted to chats.
-`hc` is not needed for the chat page, only for the terminal dashboard below.
-
-Keep this service on localhost or a trusted tailnet. It can run tools with your
-user's permissions. Optional `PIHUB_USER` and `PIHUB_PASS` enable Basic auth when
-both are set; use HTTPS for access beyond localhost.
-
-## Every machine (laptops + always-on box)
-```
 curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up --ssh          # Tailscale SSH: the hub can ssh in, no keys to manage
-curl -fsSL https://releases.herdr.dev/core/install.sh | sh   # herdr-core -> ~/.local/bin/hc
-# install pi the way you already do (it must be on PATH)
-sudo loginctl enable-linger $USER   # hc's server keeps running after you log out
+sudo tailscale up --ssh       # the box can ssh to laptops; works on college wifi
+# install and log in to pi the way you already do
 ```
-Make sure `pi` is on PATH for non-interactive ssh (e.g. ~/.local/bin, not only set in .bashrc after the "interactive" check).
+`pi` must be on PATH in a login shell (`sh -lc 'command -v pi'` should print it),
+because remote conversations start it with `$SHELL -lc`.
 
-## Always-on box only
+### Always-on box
+Check that ssh to each laptop works without a prompt:
+```sh
+ssh laptop-a true             # Tailscale hostname
 ```
-hc machine add laptop-a          # Tailscale hostname; repeat per machine
-hc machine add laptop-b
-hc ls                            # should list terminals from all machines
-
-mkdir -p ~/pi-hub ~/.config/systemd/user
-cp pi-hub.py chat.py chat.html ~/pi-hub/
-cp pi-hub.service ~/.config/systemd/user/
+Then install the service:
+```sh
+git clone https://github.com/BhardwajBhat/pi-hub ~/pi-hub
+mkdir -p ~/.config/systemd/user
+cp ~/pi-hub/pi-hub.service ~/.config/systemd/user/
+# edit PIHUB_MACHINES in that file: your laptops' ssh host names
 systemctl --user daemon-reload
 systemctl --user enable --now pi-hub
-sudo tailscale serve --bg 8377   # https://<box>.<tailnet>.ts.net, tailnet-only
+sudo loginctl enable-linger $USER   # keep running after you log out
+sudo tailscale serve --bg 8377      # https://<box>.<tailnet>.ts.net, tailnet-only
 ```
-Open `https://<box>.<your-tailnet>.ts.net` on your phone (with the Tailscale app on).
-Add it to the home screen for an app-like icon.
+Open `https://<box>.<your-tailnet>.ts.net` on your phone (Tailscale app on) and
+add it to the home screen.
 
-## Using the terminal dashboard (`/terminals`)
-- Start pi on any machine from the "new pi session" form, or from a terminal: `hc run --bg pi`.
-  (Started from a laptop, it shows up on the hub because the hub lists that laptop's terminals.)
-- On a laptop keyboard, `hc attach <addr>` takes over the same session in a real terminal; ctrl+\ detaches.
-- Optional password on top of Tailscale: set PIHUB_USER and PIHUB_PASS in the service file.
+To try it first without the service: `PIHUB_MACHINES="laptop-a" python3 pi-hub.py`
+and open http://127.0.0.1:8377.
+
+## Using it
+- **New conversation** → name, machine, directory (`~/code/x`; empty = home).
+- Ctrl/Cmd+Enter sends; Enter is a newline. **Stop** cancels the current run.
+- Pi asks questions (confirm/select/input) inline in the chat.
+
+## How it behaves
+- Conversations are listed by the box (`~/.local/share/pi-hub`). Pi's own
+  session file lives on the machine that runs it, under
+  `~/.local/share/pi-hub/sessions`.
+- Pi starts on the first message and stays running. If it stops (box restart,
+  laptop asleep, wifi drop), the work in flight stops too, and the next message
+  restarts Pi on that machine and resumes the same session.
+- A laptop that's asleep or offline shows an ssh error when you send; send again
+  once it's back.
+- Run one pi hub per data directory.
+
+## Security
+Anyone who can open the page can run commands as you on every listed machine.
+Keep it on localhost + `tailscale serve`. Optional extra password:
+`PIHUB_USER` and `PIHUB_PASS` (HTTP basic auth).
+
+## Settings
+| variable | default | |
+|---|---|---|
+| `PIHUB_MACHINES` | none | ssh host names, space or comma separated |
+| `PIHUB_AGENT` | `pi` | Pi command on the box |
+| `PIHUB_REMOTE_AGENT` | `pi` | Pi command on the laptops |
+| `PIHUB_SSH` | `ssh` | ssh command |
+| `PIHUB_BIND` / `PIHUB_PORT` | `127.0.0.1` / `8377` | |
+| `PIHUB_DATA_DIR` | `~/.local/share/pi-hub` | |
 
 ## Tests
-
 ```sh
 python3 -m unittest -v test_chat.py
 ```
-
-Tests use a fake RPC process; they make no model calls and need no credentials.
+They use a fake Pi and a fake ssh: no model calls, credentials or network.

@@ -29,6 +29,7 @@ class Conversation:
     def snapshot(self, messages=True):
         with self.lock:
             out = {k: self.record[k] for k in ("id", "name", "cwd")}
+            out["machine"] = self.record.get("machine", "")
             out.update(busy=self.busy, error=self.error, model=self.model,
                        thinking=self.thinking, activity=self.activity,
                        running=self.process is not None and self.process.poll() is None)
@@ -42,14 +43,10 @@ class Conversation:
         with self.lock:
             if self.process is not None and self.process.poll() is None:
                 return
-            argv = shlex.split(self.store.agent)
-            if not argv:
-                raise ValueError("PIHUB_AGENT must name a Pi executable")
-            argv += ["--mode", "rpc", "--session-dir", str(self.store.path / "sessions"),
-                     "--session-id", self.record["id"]]
+            argv, cwd = self.store.command_for(self.record)
             self.error = self.stderr = ""
             # Binary pipes split only on LF, not Unicode line separators.
-            self.process = subprocess.Popen(argv, cwd=self.record["cwd"],
+            self.process = subprocess.Popen(argv, cwd=cwd,
                                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                             stderr=subprocess.PIPE)
             p = self.process
@@ -247,9 +244,28 @@ class Conversation:
                 p.wait()
 
 
+def remote_path(path):
+    """Quote a path for a POSIX shell, keeping a leading ~ as $HOME."""
+    if path in ("", "~"):
+        return '"$HOME"'
+    if path.startswith("~/"):
+        return '"$HOME"/' + shlex.quote(path[2:])
+    return shlex.quote(path)
+
+
 class ChatStore:
-    def __init__(self, agent):
+    """Conversations on this machine or, over ssh, on any machine in PIHUB_MACHINES."""
+
+    def __init__(self, agent, machines=None, ssh=None, remote_agent=None):
         self.agent = agent
+        if machines is None:
+            machines = os.environ.get("PIHUB_MACHINES", "")
+        if isinstance(machines, str):
+            machines = [m.strip() for m in machines.replace(",", " ").split()]
+        # A machine name is passed to ssh, so refuse anything that could be an option.
+        self.machines = [m for m in machines if m and not m.startswith("-")]
+        self.ssh = ssh or os.environ.get("PIHUB_SSH", "ssh")
+        self.remote_agent = remote_agent or os.environ.get("PIHUB_REMOTE_AGENT", "pi")
         self.path = Path(os.environ.get("PIHUB_DATA_DIR", "~/.local/share/pi-hub")).expanduser()
         self.lock = threading.RLock()
         self.save_lock = threading.Lock()
@@ -281,15 +297,47 @@ class ChatStore:
             tmp.write_text(json.dumps(records, ensure_ascii=False))
             tmp.replace(self.path / "conversations.json")
 
-    def create(self, name, cwd):
+    def command_for(self, record):
+        """argv and local cwd that start Pi in RPC mode for this conversation."""
+        machine = record.get("machine", "")
+        if not machine:
+            argv = shlex.split(self.agent)
+            if not argv:
+                raise ValueError("PIHUB_AGENT must name a Pi executable")
+            return argv + ["--mode", "rpc", "--session-dir", str(self.path / "sessions"),
+                           "--session-id", record["id"]], record["cwd"]
+        if machine not in self.machines:
+            raise ValueError(f"Machine {machine!r} is not in PIHUB_MACHINES")
+        agent = shlex.split(self.remote_agent)
+        if not agent:
+            raise ValueError("PIHUB_REMOTE_AGENT must name a Pi executable")
+        sessions = '"$HOME"/.local/share/pi-hub/sessions'
+        script = (f"mkdir -p {sessions} && cd {remote_path(record['cwd'])} && exec "
+                  + " ".join(shlex.quote(a) for a in agent)
+                  + f" --mode rpc --session-dir {sessions} --session-id "
+                  + shlex.quote(record["id"]))
+        # A login shell, so PATH from ~/.profile (where pi usually lives) is set.
+        remote = 'exec "${SHELL:-sh}" -lc ' + shlex.quote(script)
+        return shlex.split(self.ssh) + [
+            "-T", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=15",
+            "-o", "ServerAliveCountMax=4", machine, remote], None
+
+    def create(self, name, cwd, machine=""):
         self.load()
-        cwd = str(Path(cwd or "~").expanduser().resolve())
-        if not Path(cwd).is_dir():
-            raise ValueError("Directory does not exist: " + cwd)
+        machine = (machine or "").strip()
+        if machine:
+            if machine not in self.machines:
+                raise ValueError(f"Unknown machine: {machine}")
+            # Checked when Pi starts there; a bad directory shows up as the error.
+            cwd = (cwd or "").strip() or "~"
+        else:
+            cwd = str(Path(cwd or "~").expanduser().resolve())
+            if not Path(cwd).is_dir():
+                raise ValueError("Directory does not exist: " + cwd)
         ident = uuid.uuid4().hex
         with self.lock:
             c = Conversation(self, dict(id=ident, name=name.strip() or "New conversation",
-                                        cwd=cwd, messages=[]))
+                                        cwd=cwd, machine=machine, messages=[]))
             self.conversations[ident] = c
         self.save()
         return c
@@ -317,6 +365,8 @@ class ChatStore:
 def get_route(handler, store, path, query):
     if path == "/":
         handler.reply(200, Path(__file__).with_name("chat.html").read_text())
+    elif path == "/chat/machines":
+        handler.reply(200, json.dumps(store.machines), "application/json")
     elif path == "/chat/list":
         handler.reply(200, json.dumps(store.listing()), "application/json")
     elif path == "/chat/state":
@@ -335,7 +385,7 @@ def post_route(handler, store, path, form):
         return False
     try:
         if path == "/chat/new":
-            c = store.create(form.get("name", ""), form.get("cwd", ""))
+            c = store.create(form.get("name", ""), form.get("cwd", ""), form.get("machine", ""))
         else:
             c = store.get(form.get("id", ""))
             if path == "/chat/send":

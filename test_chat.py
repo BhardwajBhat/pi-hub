@@ -43,6 +43,18 @@ for line in sys.stdin.buffer:
     print(json.dumps(dict(type='response', id=c['id'], command=kind, success=True, data=data)), flush=True)
 '''
 
+# Stands in for ssh: logs the host, then runs the remote command locally with sh,
+# exactly as sshd would hand it to the user's shell.
+FAKE_SSH = '''import os, sys
+args = sys.argv[1:]
+while args[0].startswith("-"):
+    args = args[2:] if args[0] == "-o" else args[1:]
+host, command = args
+with open(os.environ["FAKE_SSH_LOG"], "a") as f:
+    f.write(host + "\\n")
+os.execvp("sh", ["sh", "-c", command])
+'''
+
 
 class ChatTests(unittest.TestCase):
     def setUp(self):
@@ -93,6 +105,57 @@ class ChatTests(unittest.TestCase):
         self.assertIsNone(c.partial)
         self.assertEqual(c.snapshot()['messages'][0]['content'], 'final')
 
+    def wait_idle(self, c):
+        deadline = time.monotonic() + 5
+        while c.busy and time.monotonic() < deadline:
+            time.sleep(.01)
+
+    def remote_store(self):
+        ssh = self.root / 'ssh.py'
+        ssh.write_text(FAKE_SSH)
+        home = self.root / 'home'
+        (home / 'my project').mkdir(parents=True)
+        log = self.root / 'ssh.log'
+        self.env2 = patch.dict(os.environ, {"HOME": str(home), "SHELL": "/bin/sh",
+                                            "FAKE_SSH_LOG": str(log)})
+        self.env2.start()
+        self.addCleanup(self.env2.stop)
+        store = ChatStore('/nonexistent/local-pi', machines='laptop-a, laptop-b',
+                          ssh=shlex.join([sys.executable, str(ssh)]),
+                          remote_agent=shlex.join([sys.executable, str(self.root / 'fake.py')]))
+        self.addCleanup(store.shutdown)
+        return store, home, log
+
+    def test_remote_conversation_over_ssh(self):
+        store, home, log = self.remote_store()
+        c = store.create('Remote', '~/my project', 'laptop-b')
+        c.prompt('Hi')
+        self.wait_idle(c)
+        state = c.snapshot()
+        self.assertEqual(state['error'], '')
+        self.assertEqual(state['machine'], 'laptop-b')
+        self.assertEqual(state['cwd'], '~/my project')
+        self.assertEqual(len(state['messages']), 2)
+        self.assertEqual(log.read_text(), 'laptop-b\n')
+        # Session files land on the remote machine, under its $HOME.
+        self.assertTrue((home / '.local/share/pi-hub/sessions').is_dir())
+        self.assertEqual(store.listing()[0]['machine'], 'laptop-b')
+
+    def test_remote_bad_directory_is_visible(self):
+        store, _, _ = self.remote_store()
+        c = store.create('Remote', '/no/such/dir', 'laptop-a')
+        with self.assertRaises(ValueError):
+            c.prompt('Hi')
+        self.assertFalse(c.busy)
+        self.assertIn('/no/such/dir', c.snapshot()['error'])
+
+    def test_unknown_machine_refused(self):
+        store, _, _ = self.remote_store()
+        for bad in ('nope', '-oProxyCommand=evil'):
+            with self.assertRaisesRegex(ValueError, 'Unknown machine'):
+                store.create('x', '', bad)
+        self.assertEqual(ChatStore('pi', machines='-bad ok').machines, ['ok'])
+
     def test_invalid_directory(self):
         with self.assertRaisesRegex(ValueError, 'Directory does not exist'):
             self.store.create('Bad', str(self.root / 'missing'))
@@ -116,7 +179,11 @@ class ChatTests(unittest.TestCase):
         base = 'http://127.0.0.1:' + str(server.server_port)
         try:
             with urlopen(base + '/') as r:
-                self.assertIn(b'Conversations', r.read())
+                page = r.read()
+                self.assertIn(b'Conversations', page)
+                self.assertNotIn(b'/terminals', page)
+            with urlopen(base + '/chat/machines') as r:
+                self.assertEqual(json.load(r), [])
             data = urlencode({'name': '<script>test</script>', 'cwd': str(self.root)}).encode()
             with urlopen(Request(base + '/chat/new', data=data)) as r:
                 ident = json.load(r)['id']
