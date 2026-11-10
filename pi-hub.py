@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""pi-hub: a plain-HTML, phone-friendly web UI over herdr-core (hc).
+"""pi-hub: a plain-HTML chat UI for Pi, plus an hc terminal dashboard.
 
-Lists every hc terminal (this machine and every `hc machine add`-ed one),
-shows its screen, lets you type into it, press keys, start new pi sessions
-on any machine and kill old ones.
+The home page uses Pi RPC for structured conversations (chat.py/chat.html).
+The legacy /terminals page lists local and remote hc terminals, shows their
+screens and lets you type, press keys, start sessions and kill old ones.
 
 Python 3.8+ stdlib only. Run it on the always-on box:
 
@@ -14,7 +14,8 @@ Settings (environment variables):
     PIHUB_BIND    address to listen on       (default 127.0.0.1)
     PIHUB_PORT    port                       (default 8377)
     PIHUB_HC      path to hc                 (default: hc on PATH, then ~/.local/bin/hc)
-    PIHUB_AGENT   command for "new session"  (default: pi)
+    PIHUB_AGENT   Pi command for chat/terminals (default: pi)
+    PIHUB_DATA_DIR chat/session storage (default ~/.local/share/pi-hub)
     PIHUB_USER / PIHUB_PASS   if both set, HTTP basic auth is required
 """
 import base64
@@ -27,6 +28,7 @@ import subprocess
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlencode, urlparse
+from chat import ChatStore, get_route as chat_get, post_route as chat_post
 
 BIND = os.environ.get("PIHUB_BIND", "127.0.0.1")
 PORT = int(os.environ.get("PIHUB_PORT", "8377"))
@@ -34,6 +36,8 @@ HC = os.environ.get("PIHUB_HC") or shutil.which("hc") or os.path.expanduser("~/.
 AGENT = os.environ.get("PIHUB_AGENT", "pi")
 USER = os.environ.get("PIHUB_USER", "")
 PASS = os.environ.get("PIHUB_PASS", "")
+
+CHATS = ChatStore(AGENT)
 
 KEYS = ["enter", "esc", "tab", "up", "down", "ctrl+c", "ctrl+d", "y", "n"]
 
@@ -147,12 +151,13 @@ def index_html(msg="", show_all=False):
     opts = "<option value=''>this machine</option>" + "".join(
         f"<option>{esc(m)}</option>" for m in ms)
     body = f"""
-<h1>pi hub</h1>
+<h1>pi hub · terminals</h1>
+<p><a href="/">← chat</a></p>
 {f"<p class='err'>{esc(msg)}</p>" if msg else ""}
 {f"<p class='err'>{esc(err)}</p>" if err else ""}
 {table}
-<p><a href="/">refresh</a> ·
-{'<a href="/">live only</a>' if show_all else '<a href="/?all=1">include finished</a>'}</p>
+<p><a href="/terminals">refresh</a> ·
+{'<a href="/terminals">live only</a>' if show_all else '<a href="/terminals?all=1">include finished</a>'}</p>
 <fieldset><legend>new {esc(AGENT)} session</legend>
 <form method="post" action="/new">
 <p><label>machine<br><select name="on">{opts}</select></label></p>
@@ -173,7 +178,7 @@ def term_html(addr):
         f"<button name='k' value='{esc(k)}'>{esc(k)}</button>" for k in KEYS)
     a = esc(addr)
     body = f"""
-<p><a href="/">&larr; all terminals</a></p>
+<p><a href="/terminals">&larr; all terminals</a> · <a href="/">chat</a></p>
 <h1>{a}</h1>
 <pre id="scr">{esc(screen(addr))}</pre>
 <form method="post" action="/send" id="sendf">
@@ -240,8 +245,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # Browser navigated away while a response was in flight.
 
     def redirect(self, to):
         self.send_response(303)
@@ -266,7 +274,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
-        if u.path == "/":
+        if chat_get(self, CHATS, u.path, q):
+            return
+        if u.path == "/terminals":
             self.reply(200, index_html(q.get("msg", ""), bool(q.get("all"))))
         elif u.path == "/t" and q.get("a"):
             self.reply(200, term_html(q["a"]))
@@ -281,9 +291,14 @@ class Handler(BaseHTTPRequestHandler):
         if not self.same_origin():
             return self.reply(403, "cross-origin request refused", "text/plain")
         path = urlparse(self.path).path
-        f = self.form()
+        try:
+            f = self.form()
+        except (ValueError, UnicodeError):
+            return self.reply(400, "invalid form", "text/plain")
+        if chat_post(self, CHATS, path, f):
+            return
         addr = f.get("a", "")
-        back = term_link(addr) if addr else "/"
+        back = term_link(addr) if addr else "/terminals"
 
         if path == "/send" and addr:
             text = f.get("text", "")
@@ -292,7 +307,7 @@ class Handler(BaseHTTPRequestHandler):
             ok, out = hc("keys", addr, f["k"])
         elif path == "/kill" and addr:
             ok, out = hc("kill", addr)
-            back = "/"
+            back = "/terminals"
         elif path == "/new":
             args = ["run", "--bg", "--no-parent", "--outlive-parent"]
             if f.get("on"):
@@ -303,7 +318,7 @@ class Handler(BaseHTTPRequestHandler):
                 args += ["--name", f["name"].strip()]
             args += ["--json", "--", *AGENT.split()]
             ok, out = hc(*args, timeout=60)
-            back = "/"
+            back = "/terminals"
             if ok:
                 try:
                     a = json.loads(out.strip().splitlines()[-1]).get("address")
@@ -318,7 +333,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if not ok:
             # fetch() callers just see the status; plain form posts land on the error.
-            return self.redirect("/?" + urlencode({"msg": out[:500]}))
+            return self.redirect("/terminals?" + urlencode({"msg": out[:500]}))
         self.redirect(back)
 
 
@@ -328,11 +343,14 @@ def main():
               "reach it can run commands. Use a Tailscale IP or set PIHUB_USER/PIHUB_PASS.",
               file=sys.stderr)
     srv = ThreadingHTTPServer((BIND, PORT), Handler)
-    print(f"pi hub on http://{BIND}:{PORT}  (hc: {HC}, agent: {AGENT})", file=sys.stderr)
+    print(f"pi hub chat on http://{BIND}:{PORT}  (agent: {AGENT}; terminals: /terminals)", file=sys.stderr)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        srv.server_close()
+        CHATS.shutdown()
 
 
 if __name__ == "__main__":
