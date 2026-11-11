@@ -88,6 +88,26 @@ function collect(root: string): { path: string; type: string; data: string }[] {
   return out;
 }
 
+// ---- slash commands typed on the web --------------------------------------
+
+// pi's built-in commands live in its terminal UI and can't be triggered from an
+// extension, so the useful ones are re-done here with the extension API.
+const WEB_BUILTINS = [
+  { name: "help", description: "List commands you can use here" },
+  { name: "name", description: "Set or show the session name" },
+  { name: "model", description: "Show or switch the model: /model provider/id (or part of a name)" },
+  { name: "thinking", description: "Show or set the thinking level" },
+  { name: "compact", description: "Compact the context, optionally with instructions" },
+  { name: "session", description: "Show session info and context usage" },
+  { name: "new", description: "Start a new session" },
+  { name: "reload", description: "Reload extensions, skills, prompts and context files" },
+];
+const TERMINAL_ONLY = new Set([
+  "settings", "scoped-models", "login", "logout", "llama", "resume", "tree", "fork", "clone", "import",
+  "copy", "export", "share", "bug", "trust", "mcp", "hotkeys", "changelog", "quit",
+]);
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
 async function relayFetch(c: Config, path: string, init: RequestInit = {}) {
   const res = await fetch(base(c.url) + path, {
     ...init,
@@ -116,6 +136,101 @@ export default function (pi: ExtensionAPI) {
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
   }
   const event = (e: unknown) => send({ type: "event", event: e });
+  // Feedback for commands run from the web, shown there as a dim note.
+  const notice = (text: string) => event({ type: "notice", text });
+  let fromWeb = false; // set while a web-typed /rc command runs, so it reports back
+
+  function commandList() {
+    let others: { name: string; description?: string }[] = [];
+    try {
+      others = pi.getCommands().map((c) => ({ name: c.name, description: c.description }));
+    } catch {}
+    return [...WEB_BUILTINS, ...others.filter((c) => !WEB_BUILTINS.some((b) => b.name === c.name))];
+  }
+
+  // Handles a "/..." message typed on the web. Returns false when it isn't a
+  // command, so the text is sent to the model as usual (e.g. "/etc/hosts is…").
+  async function webCommand(text: string): Promise<boolean> {
+    const match = text.match(/^\/([\w:.-]+)(?:\s+([\s\S]*))?$/);
+    if (!match || !ctx) return false;
+    const name = match[1], arg = (match[2] ?? "").trim();
+    const c = ctx;
+    switch (name) {
+      case "help":
+        notice(commandList().map((x) => `/${x.name}${x.description ? " — " + x.description : ""}`).join("\n") +
+          "\n\nTerminal only: " + [...TERMINAL_ONLY].map((n) => "/" + n).join(" "));
+        return true;
+      case "name":
+        if (arg) pi.setSessionName(arg);
+        notice("Session name: " + (pi.getSessionName() ?? "(none)"));
+        return true;
+      case "thinking":
+        if (arg) {
+          if (!THINKING_LEVELS.includes(arg)) { notice("Levels: " + THINKING_LEVELS.join(", ")); return true; }
+          pi.setThinkingLevel(arg as any);
+        }
+        notice("Thinking: " + pi.getThinkingLevel() + (arg ? "" : "  (levels: " + THINKING_LEVELS.join(", ") + ")"));
+        return true;
+      case "model": {
+        const current = c.model ? `${c.model.provider}/${c.model.id}` : "(none)";
+        const all = c.modelRegistry.getAvailable();
+        if (!arg) {
+          // The configured model list if there is one, else the current provider's models.
+          const scoped = (c.scopedModels ?? []).map((s: any) => s.model);
+          const shown = scoped.length ? scoped : all.filter((x) => x.provider === c.model?.provider);
+          notice(`Model: ${current}\n${scoped.length ? "Your models" : "Same provider"}:\n` +
+            shown.slice(0, 25).map((x) => `  ${x.provider}/${x.id}`).join("\n") +
+            `\nSwitch with /model <provider/id or part of a name>, e.g. /model sonnet`);
+          return true;
+        }
+        const q = arg.toLowerCase();
+        const exact = all.filter((x) => `${x.provider}/${x.id}`.toLowerCase() === q || x.id.toLowerCase() === q);
+        const hits = exact.length ? exact : all.filter((x) => `${x.provider}/${x.id} ${x.name ?? ""}`.toLowerCase().includes(q));
+        if (hits.length !== 1) {
+          notice(hits.length ? `Several models match "${arg}":\n` + hits.slice(0, 20).map((x) => `  ${x.provider}/${x.id}`).join("\n")
+                             : `No available model matches "${arg}". Try /model to list them.`);
+          return true;
+        }
+        const ok = await pi.setModel(hits[0]);
+        notice(ok ? `Model: ${hits[0].provider}/${hits[0].id}` : `No credentials for ${hits[0].provider}; log in from the terminal (/login).`);
+        return true;
+      }
+      case "compact":
+        notice("Compacting…");
+        c.compact({
+          customInstructions: arg || undefined,
+          onComplete: () => notice("Compacted."),
+          onError: (e: Error) => notice("Compaction failed: " + e.message),
+        });
+        return true;
+      case "session": {
+        const u: any = c.getContextUsage();
+        const used = u?.tokens != null && u?.contextWindow ? `${Math.round(u.tokens / 1000)}k / ${Math.round(u.contextWindow / 1000)}k tokens (${Math.round((u.tokens / u.contextWindow) * 100)}%)` : "unknown";
+        notice([
+          `Name: ${pi.getSessionName() ?? "(none)"}`, `Machine: ${hostname()}  Dir: ${tilde(c.cwd)}`,
+          `Model: ${c.model ? c.model.provider + "/" + c.model.id : "(none)"}  Thinking: ${pi.getThinkingLevel()}`,
+          `Context: ${used}`, `Messages: ${history().length}`, `Session id: ${c.sessionManager.getSessionId()}`,
+        ].join("\n"));
+        return true;
+      }
+      case "new":
+      case "reload":
+        // These need a command context, so go through our own /rc command.
+        notice(name === "new" ? "Starting a new session… it will appear in the list." : "Reloading…");
+        pi.sendUserMessage(`/rc web-${name}`, { expandPromptTemplates: true });
+        return true;
+    }
+    if (TERMINAL_ONLY.has(name)) {
+      notice(`/${name} only works in pi's terminal.`);
+      return true;
+    }
+    if (!commandList().some((x) => x.name === name)) return false;
+    // Extension commands, prompt templates and /skill:… — pi runs them like typed input.
+    if (name === "rc" || name.startsWith("rc:")) fromWeb = true;
+    if (!c.isIdle()) pi.sendUserMessage(text, { expandPromptTemplates: true, deliverAs: "steer" });
+    else pi.sendUserMessage(text, { expandPromptTemplates: true });
+    return true;
+  }
 
   function history() {
     if (!ctx) return [];
@@ -151,7 +266,7 @@ export default function (pi: ExtensionAPI) {
       clearInterval(pingTimer);
       pingTimer = setInterval(() => sock.readyState === WebSocket.OPEN && sock.send("ping"), 30_000);
     };
-    sock.onmessage = (e) => {
+    sock.onmessage = async (e) => {
       if (e.data === "pong") return;
       let m: any;
       try {
@@ -160,13 +275,14 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       if (m.type === "snapshot_request") {
-        send({ type: "snapshot", to: m.to, data: { messages: history(), partial, busy } });
+        send({ type: "snapshot", to: m.to, data: { messages: history(), partial, busy, commands: commandList() } });
       } else if (m.type === "prompt") {
         const text = typeof m.text === "string" ? m.text.trim() : "";
         const images = (Array.isArray(m.images) ? m.images : [])
           .filter((i: any) => typeof i?.data === "string" && /^image\/(png|jpeg|gif|webp)$/.test(i?.mimeType))
           .map((i: any) => ({ type: "image" as const, data: i.data, mimeType: i.mimeType }));
         if (!text && !images.length) return;
+        if (!images.length && text.startsWith("/") && (await webCommand(text))) return;
         const content = images.length ? [{ type: "text" as const, text }, ...images] : text;
         // While pi is working, steer: delivered once the current tool calls finish,
         // so pi sees it mid-task instead of after it is done.
@@ -338,6 +454,14 @@ export default function (pi: ExtensionAPI) {
     handler: async (args, c) => {
       ctx = c;
       const [cmd, url, token] = (args ?? "").trim().split(/\s+/);
+      if (cmd === "web-new") return void (await c.newSession());
+      if (cmd === "web-reload") return void (await c.reload());
+      // When typed on the web, mirror this command's messages there too.
+      if (fromWeb) {
+        fromWeb = false;
+        const ui = c.ui, notify = ui.notify.bind(ui);
+        c = Object.create(c, { ui: { value: Object.create(ui, { notify: { value: (msg: string, level?: any) => { notice(msg); return notify(msg, level); } } }) } });
+      }
       if (cmd === "setup") {
         if (!url || !token) {
           c.ui.notify("Usage: /rc setup <relay url> <token>", "error");

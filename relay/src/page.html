@@ -59,6 +59,12 @@ textarea { flex: 1; min-height: 2.6rem; max-height: 10rem; resize: vertical; pad
 #attach { padding: 0 .6rem; }
 #thumbs { display: flex; gap: .4rem; flex-wrap: wrap; margin-bottom: .4rem; }
 #thumbs:empty { display: none; }
+#cmds { margin-bottom: .4rem; border: 1px solid var(--line); max-height: 14rem; overflow: auto; font-size: .9rem; }
+#cmds:empty { display: none; }
+#cmds button { display: block; width: 100%; text-align: left; border: 0; background: none; padding: .35rem .5rem; cursor: pointer; color: inherit; }
+#cmds button:hover, #cmds button:focus { background: var(--code); }
+#cmds small { color: var(--dim); margin-left: .5rem; }
+.notice { white-space: pre-wrap; font-size: .85rem; color: var(--dim); border-left: 2px solid var(--line); padding-left: .6rem; margin: .5rem 0; }
 #thumbs span { position: relative; }
 #thumbs img { height: 3.5rem; border-radius: 4px; border: 1px solid var(--line); display: block; }
 #thumbs button { position: absolute; top: -.4rem; right: -.4rem; border-radius: 50%; width: 1.4rem; height: 1.4rem;
@@ -95,6 +101,7 @@ textarea { flex: 1; min-height: 2.6rem; max-height: 10rem; resize: vertical; pad
     </header>
     <section id="log"></section>
     <footer>
+      <div id="cmds"></div>
       <div id="thumbs"></div>
       <form id="composer">
         <button id="attach" type="button" title="Attach images" disabled>📎</button>
@@ -118,6 +125,7 @@ textarea { flex: 1; min-height: 2.6rem; max-height: 10rem; resize: vertical; pad
 'use strict';
 const $ = id => document.getElementById(id);
 let token = '', ws = null, sessions = [], open = '', messages = [], partial = null, busy = false, activity = '';
+let commands = []; // slash commands the open session accepts (from its snapshot)
 let retry = 1000;
 
 // The token can come from the link (#token=...), so one bookmark is enough.
@@ -247,6 +255,9 @@ function renderLog() {
       const url = m.toolName === 'publish_page' && !m.isError && (textOf(m.content).match(/https?:\/\/\S+/) || [])[0];
       if (url) { flush(); say('pi', pageLink(url)); }
       else if (!callIds.has(m.toolCallId)) step(i, fold((m.isError ? '✗ ' : '↳ ') + (m.toolName || 'result'), textOf(m.content)), m.toolName);
+    } else if (m.role === 'notice') {
+      flush(); who = '';
+      frag.append(el('div', m.text, 'notice'));
     } else if (m.role === 'bashExecution') {
       flush(); who = '';
       frag.append(fold('$ ' + (m.command || ''), m.output || ''));
@@ -304,6 +315,7 @@ function onEvent(ev) {
     messages.push(ev.message);
   } else if (ev.type === 'busy') { busy = ev.busy; if (!busy) { activity = ''; partial = null; } }
   else if (ev.type === 'activity') activity = ev.text || '';
+  else if (ev.type === 'notice') messages.push({role: 'notice', text: String(ev.text || '')}); // shown here only, not saved
   renderLog(); controls();
 }
 
@@ -320,7 +332,7 @@ function connect() {
     const m = JSON.parse(e.data);
     if (m.type === 'sessions') { sessions = m.sessions; renderList(); }
     else if (m.id !== open) return;
-    else if (m.type === 'snapshot') { messages = m.data.messages || []; partial = m.data.partial || null; busy = !!m.data.busy; renderLog(); controls(); }
+    else if (m.type === 'snapshot') { messages = m.data.messages || []; partial = m.data.partial || null; commands = m.data.commands || []; busy = !!m.data.busy; renderLog(); controls(); }
     else if (m.type === 'event') onEvent(m.event);
     else if (m.type === 'gone') { sessions = sessions.filter(s => s.id !== m.id); renderList(); }
   };
@@ -389,6 +401,22 @@ $('text').addEventListener('paste', ev => {
 $('log').addEventListener('dragover', ev => ev.preventDefault());
 $('log').addEventListener('drop', ev => { ev.preventDefault(); addFiles([...ev.dataTransfer.files]); });
 
+// ---- "/" suggestions
+function renderCmds() {
+  const v = $('text').value;
+  const m = v.match(/^\/([\w:.-]*)$/);
+  if (!m || !commands.length) return $('cmds').replaceChildren();
+  const q = m[1].toLowerCase();
+  const hits = commands.filter(c => c.name.toLowerCase().startsWith(q)).slice(0, 12);
+  $('cmds').replaceChildren(...hits.map(c => {
+    const b = el('button', '/' + c.name); b.type = 'button';
+    if (c.description) b.append(el('small', c.description));
+    b.onclick = () => { $('text').value = '/' + c.name + ' '; renderCmds(); $('text').focus(); };
+    return b;
+  }));
+}
+$('text').addEventListener('input', renderCmds);
+
 $('composer').onsubmit = async ev => {
   ev.preventDefault();
   const text = $('text').value.trim();
@@ -404,7 +432,7 @@ $('composer').onsubmit = async ev => {
     return;
   }
   send({type: 'prompt', id: open, text, images: pending.map(p => ({data: p.data, mimeType: p.mimeType}))});
-  $('text').value = ''; pending = []; renderThumbs();
+  $('text').value = ''; pending = []; renderThumbs(); renderCmds();
 };
 $('text').onkeydown = ev => {
   // On phones Enter stays a newline; the Send button sends.
