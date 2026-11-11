@@ -45,8 +45,8 @@ It saves to `~/.pi/agent/pi-rc.json` and prints the web link
   pi gets them as soon as its current tool calls finish. **Stop** on the web is the same as Escape in the terminal.
 - Slash commands work from the web: extension commands, prompt templates and
   `/skill:…` run as if typed, and `/help`, `/name`, `/model`, `/thinking`,
-  `/compact`, `/session`, `/new`, `/reload` are handled by the extension. Type `/`
-  for suggestions. Commands that need pi's terminal UI (`/settings`, `/resume`,
+  `/compact`, `/session`, `/new`, `/resume`, `/reload` are handled by the extension. Type `/`
+  for suggestions. Commands that need pi's terminal UI (`/settings`,
   `/tree`, `/login`…) say so instead of going to the model.
 - `/rc` shows status and the link · `/rc off` / `/rc on` for the current session.
 - A session is listed while its pi is running and online.

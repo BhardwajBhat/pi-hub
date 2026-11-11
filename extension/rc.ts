@@ -5,7 +5,7 @@
 // Setup once per machine:   /rc setup https://pi-rc.<you>.workers.dev <token>
 // Then every pi session connects on its own. /rc shows status and the web link,
 // /rc off and /rc on toggle it for the current session.
-import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { Type } from "typebox";
 import { homedir, hostname } from "node:os";
@@ -100,10 +100,11 @@ const WEB_BUILTINS = [
   { name: "compact", description: "Compact the context, optionally with instructions" },
   { name: "session", description: "Show session info and context usage" },
   { name: "new", description: "Start a new session" },
+  { name: "resume", description: "Pick an earlier session in this folder to continue" },
   { name: "reload", description: "Reload extensions, skills, prompts and context files" },
 ];
 const TERMINAL_ONLY = new Set([
-  "settings", "scoped-models", "login", "logout", "llama", "resume", "tree", "fork", "clone", "import",
+  "settings", "scoped-models", "login", "logout", "llama", "tree", "fork", "clone", "import",
   "copy", "export", "share", "bug", "trust", "mcp", "hotkeys", "changelog", "quit",
 ]);
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -211,6 +212,28 @@ export default function (pi: ExtensionAPI) {
           `Model: ${c.model ? c.model.provider + "/" + c.model.id : "(none)"}  Thinking: ${pi.getThinkingLevel()}`,
           `Context: ${used}`, `Messages: ${history().length}`, `Session id: ${c.sessionManager.getSessionId()}`,
         ].join("\n"));
+        return true;
+      }
+      case "resume": {
+        const list = (await SessionManager.list(c.cwd))
+          .filter((x) => x.id !== c.sessionManager.getSessionId())
+          .sort((a, b) => +new Date(b.modified) - +new Date(a.modified))
+          .slice(0, 20);
+        if (!arg) {
+          if (!list.length) { notice("No other sessions in " + tilde(c.cwd) + "."); return true; }
+          const ago = (d: Date) => { const m = Math.round((Date.now() - +new Date(d)) / 60000);
+            return m < 60 ? m + " min ago" : m < 1440 ? Math.round(m / 60) + " h ago" : Math.round(m / 1440) + " d ago"; };
+          event({ type: "choices", title: "Resume a session in " + tilde(c.cwd), command: "/resume",
+            items: list.map((x, i) => ({
+              value: x.id, label: `${i + 1}. ${(x.name || x.firstMessage || "(empty)").replace(/\s+/g, " ").slice(0, 80)}`,
+              detail: `${x.messageCount} messages · ${ago(x.modified)}`,
+            })) });
+          return true;
+        }
+        const pick = /^\d+$/.test(arg) ? list[Number(arg) - 1] : list.find((x) => x.id.startsWith(arg));
+        if (!pick) { notice(`No session "${arg}". Use /resume to list them.`); return true; }
+        notice("Resuming " + (pick.name || pick.firstMessage || pick.id).replace(/\s+/g, " ").slice(0, 60) + "…");
+        pi.sendUserMessage(`/rc web-resume ${pick.id}`, { expandPromptTemplates: true });
         return true;
       }
       case "new":
@@ -456,6 +479,11 @@ export default function (pi: ExtensionAPI) {
       const [cmd, url, token] = (args ?? "").trim().split(/\s+/);
       if (cmd === "web-new") return void (await c.newSession());
       if (cmd === "web-reload") return void (await c.reload());
+      if (cmd === "web-resume") {
+        const target = (await SessionManager.list(c.cwd)).find((x) => x.id === url);
+        if (target) await c.switchSession(target.path);
+        return;
+      }
       // When typed on the web, mirror this command's messages there too.
       if (fromWeb) {
         fromWeb = false;
