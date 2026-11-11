@@ -45,6 +45,13 @@ header small { color: var(--dim); min-width: 0; overflow: hidden; text-overflow:
 .md hr { border: 0; border-top: 1px solid var(--line); }
 details { margin: .3rem 0; font-size: .9rem; }
 summary { cursor: pointer; color: var(--dim); }
+.label { margin-top: .9rem; }
+.label + .msg, .label + .md, .label + .steps, .steps + .msg, .steps + .md { margin-top: .2rem; }
+.steps { margin: .3rem 0 .6rem; }
+.steps > summary { font-size: .85rem; }
+.steps > details, .steps > .step { margin: .25rem 0 .25rem 1.1rem; }
+.step summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.step .who { margin-top: .3rem; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--code); padding: .5rem; margin: .3rem 0; max-height: 20rem; overflow: auto; font-size: .8rem; }
 footer { border-top: 1px solid var(--line); padding: .5rem .8rem; }
 form { display: flex; gap: .4rem; }
@@ -169,52 +176,87 @@ function md(text) {
   return box;
 }
 
-function renderMessage(m) {
-  if (m.role === 'custom' && m.display === false) return null;
+// ---- transcript: replies stay visible; tool calls, results and thinking between
+// them fold into one "N steps" group, like Claude's UI.
+function pageLink(url) {
   const box = el('div', null, 'msg');
-  if (m.role === 'user') {
-    box.classList.add('user');
-    box.append(el('div', 'you', 'who'), linked(textOf(m.content), 'text'));
-  } else if (m.role === 'assistant') {
-    box.append(el('div', 'pi', 'who'));
-    for (const b of (typeof m.content === 'string' ? [{type: 'text', text: m.content}] : m.content || [])) {
-      if (b.type === 'text' && b.text) box.append(md(b.text));
-      else if (b.type === 'thinking' && b.thinking) box.append(fold('thinking', b.thinking));
-      else if (b.type === 'toolCall') box.append(fold(b.name + ' ' + brief(b.arguments), JSON.stringify(b.arguments, null, 2)));
-    }
-    if (m.errorMessage) box.append(el('div', m.errorMessage, 'text'));
-  } else if (m.role === 'toolResult' && m.toolName === 'publish_page' && !m.isError) {
-    const url = (textOf(m.content).match(/https?:\/\/\S+/) || [])[0];
-    if (!url) return null;
-    const a = el('a', '↗ open page'); a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
-    box.append(a, el('small', ' ' + url.replace(/^https?:\/\//, ''), 'who'));
-  } else if (m.role === 'toolResult') {
-    box.append(fold((m.isError ? '✗ ' : '↳ ') + (m.toolName || 'result'), textOf(m.content)));
-  } else if (m.role === 'bashExecution') {
-    box.append(fold('$ ' + (m.command || ''), m.output || ''));
-  } else {
-    const t = textOf(m.content) || m.summary;
-    if (!t) return null;
-    box.append(el('div', m.customType || m.role, 'who'), el('div', t, 'text'));
-  }
+  const a = el('a', '↗ open page'); a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+  box.append(a, el('small', ' ' + url.replace(/^https?:\/\//, ''), 'who'));
   return box;
 }
 function brief(args) {
-  const v = args && (args.command || args.path || args.file_path || args.pattern);
-  return v ? String(v).slice(0, 60) : '';
+  const v = args && (args.command || args.path || args.file_path || args.pattern || args.query || args.url);
+  return v ? String(v).replace(/\s+/g, ' ').slice(0, 70) : '';
 }
-
+function callStep(b, r) {
+  const d = el('details', null, 'step');
+  const mark = !r ? '… ' : r.isError ? '✗ ' : '';
+  d.append(el('summary', mark + b.name + (brief(b.arguments) ? '  ' + brief(b.arguments) : '')));
+  d.append(el('div', 'input', 'who'), el('pre', JSON.stringify(b.arguments, null, 2)));
+  if (r) d.append(el('div', r.isError ? 'error' : 'result', 'who'), el('pre', textOf(r.content) || '(empty)'));
+  return d;
+}
 function renderLog() {
   const log = $('log');
   const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 60;
   const openKeys = new Set([...log.querySelectorAll('details[open]')].map(d => d.dataset.k));
+  const all = [...messages, ...(partial ? [partial] : [])];
+  const results = new Map(), callIds = new Set();
+  for (const m of all) {
+    if (m.role === 'toolResult') results.set(m.toolCallId, m);
+    if (m.role === 'assistant' && Array.isArray(m.content)) for (const b of m.content) if (b.type === 'toolCall') callIds.add(b.id);
+  }
   const frag = document.createDocumentFragment();
-  [...messages, ...(partial ? [partial] : [])].forEach((m, i) => {
-    const e = renderMessage(m);
-    if (!e) return;
-    e.querySelectorAll('details').forEach((d, j) => { d.dataset.k = i + ':' + j; d.open = openKeys.has(d.dataset.k); });
-    frag.append(e);
+  let group = null, who = '';
+  const say = (label, node) => {
+    if (label && who !== label) { frag.append(el('div', label, 'who label')); who = label; }
+    frag.append(node);
+  };
+  const flush = () => {
+    if (!group) return;
+    const g = el('details', null, 'steps'); g.dataset.k = group.key;
+    const names = [...new Set(group.names)];
+    const running = group.open && busy;
+    g.append(el('summary', (running ? 'working · ' : '') + group.items.length + (group.items.length === 1 ? ' step' : ' steps') +
+      (names.length ? ' · ' + names.slice(0, 4).join(', ') + (names.length > 4 ? ', …' : '') : '')));
+    group.items.forEach((d, n) => { d.dataset.k = group.key + ':' + n; d.open = openKeys.has(d.dataset.k); g.append(d); });
+    g.open = openKeys.has(group.key);
+    say('pi', g);
+    group = null;
+  };
+  const step = (key, node, name) => {
+    if (!group) group = {key: 'g' + key, items: [], names: [], open: false};
+    group.items.push(node);
+    if (name) group.names.push(name);
+  };
+  all.forEach((m, i) => {
+    if (m.role === 'user') {
+      flush(); who = '';
+      const box = el('div', null, 'msg user');
+      box.append(el('div', 'you', 'who'), linked(textOf(m.content), 'text'));
+      frag.append(box);
+    } else if (m.role === 'assistant') {
+      const blocks = typeof m.content === 'string' ? [{type: 'text', text: m.content}] : m.content || [];
+      for (const b of blocks) {
+        if (b.type === 'text' && b.text) { flush(); say('pi', Object.assign(md(b.text), {className: (mdOn ? 'md' : 'text') + ' msg'})); }
+        else if (b.type === 'thinking' && b.thinking) step(i, fold('thinking', b.thinking), 'thinking');
+        else if (b.type === 'toolCall') step(i, callStep(b, results.get(b.id)), b.name);
+      }
+      if (m.errorMessage) { flush(); say('pi', el('div', m.errorMessage, 'text msg')); }
+    } else if (m.role === 'toolResult') {
+      const url = m.toolName === 'publish_page' && !m.isError && (textOf(m.content).match(/https?:\/\/\S+/) || [])[0];
+      if (url) { flush(); say('pi', pageLink(url)); }
+      else if (!callIds.has(m.toolCallId)) step(i, fold((m.isError ? '✗ ' : '↳ ') + (m.toolName || 'result'), textOf(m.content)), m.toolName);
+    } else if (m.role === 'bashExecution') {
+      flush(); who = '';
+      frag.append(fold('$ ' + (m.command || ''), m.output || ''));
+    } else if (!(m.role === 'custom' && m.display === false)) {
+      const t = textOf(m.content) || m.summary;
+      if (t) { flush(); who = ''; const box = el('div', null, 'msg'); box.append(el('div', m.customType || m.role, 'who'), el('div', t, 'text')); frag.append(box); }
+    }
   });
+  if (group) group.open = true; // the trailing group is the one pi is working in
+  flush();
   log.replaceChildren(frag);
   if (atBottom) log.scrollTop = log.scrollHeight;
 }
